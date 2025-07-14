@@ -1,0 +1,182 @@
+/* Проект «Секреты Тёмнолесья»
+ * Цель проекта: изучить влияние характеристик игроков и их игровых персонажей 
+ * на покупку внутриигровой валюты «райские лепестки», а также оценить 
+ * активность игроков при совершении внутриигровых покупок
+ * 
+ * Автор: Комиссаров Никита
+ * Дата: 28.10.2024
+*/
+-- Часть 1. Исследовательский анализ данных
+-- Задача 1. Исследование доли платящих игроков
+-- 1.1. Доля платящих пользователей по всем данным:
+-- Рассчитывает всех пользователей, платящих, а также коэффициент между платящими и не платящими. 
+SELECT
+	sum(payer) AS payers,
+	count(*) AS total_users,
+	ROUND(sum(payer)::NUMERIC/count(*), 4) AS payers_total_users_ratio
+FROM
+	fantasy.users;
+-- 1.2. Доля платящих пользователей в разрезе расы персонажа:
+-- Рассчитывает всех пользователей, платящих, а также коэффициент между платящими и не платящими в рамках рас.
+SELECT 
+	race,
+	COUNT(*) AS total_at_race, 
+	sum(payer) AS payers_at_race,
+	ROUND(sum(payer)::NUMERIC / COUNT(*), 4) AS race_payers_ration
+FROM
+	fantasy.users
+JOIN fantasy.race
+		USING (race_id)
+GROUP BY
+	race
+ORDER BY
+	payers_at_race DESC;
+-- Задача 2. Исследование внутриигровых покупок
+-- 2.1. Статистические показатели по полю amount:
+-- Рассчитывает статистические показатели по количеству и суммам покупок.
+SELECT 
+	count(*) AS total_purchases,
+	SUM(amount) AS sum_purchase,
+	max(amount) AS max_purchase,
+	min(amount) AS min_purchase,
+	avg(amount)::NUMERIC(10,2) AS avg_amount,
+	PERCENTILE_CONT(0.50) WITHIN GROUP (
+	ORDER BY amount)::NUMERIC(10,2) AS mediana,
+	STDDEV(amount)::NUMERIC(10,2) AS stand_dev
+FROM
+	fantasy.events
+WHERE amount != 0;
+-- 2.2: Аномальные нулевые покупки:
+-- Вычисляет нулевые покуки, чтобы проверить их наличие и долю. 
+SELECT
+	COUNT(*) AS total_purchases,
+	COUNT(CASE WHEN amount = 0 THEN 1 END) AS null_purchases,
+	ROUND(COUNT(CASE WHEN amount = 0 THEN 1 END)::NUMERIC / COUNT(*), 5) AS null_total_ratio
+FROM
+	fantasy.events;
+-- 2.3: Сравнительный анализ активности платящих и неплатящих игроков:
+-- Рассчитывает статистические показетели покупок по платящим и не платящим пользователям, а также их активность через среднее. 
+WITH total_purchases AS (
+    SELECT
+        payer,
+        COUNT(DISTINCT id) AS total_users,
+        COUNT(transaction_id) AS total_purchases,
+        SUM(amount) AS total_sum
+    FROM
+        fantasy.users
+    JOIN
+        fantasy.events USING (id)
+    WHERE
+        amount != 0
+    GROUP BY
+        payer
+)
+SELECT
+    payer,
+    total_users,
+    total_purchases,
+    ROUND(total_purchases::NUMERIC/total_users, 2) AS avg_purchases_count_per_user,
+    ROUND(total_sum::NUMERIC/total_users, 2) AS avg_sum_per_user
+FROM
+    total_purchases
+ORDER BY
+    payer;
+-- 2.4: Популярные эпические предметы:
+-- Рассчитывает популярные по покупкам предметы в контексте продаж, а также отношение между продажами конкретного предмета и количеством всех продаж. Вычисляет долю покупателей среди всех пользователей. 
+WITH items_partial AS (
+SELECT 
+	    DISTINCT game_items, 
+	    COUNT(DISTINCT id) AS buyers,
+	    COUNT(transaction_id) AS sellings
+FROM
+	fantasy.items
+JOIN fantasy.events
+		USING (item_code)
+WHERE
+	amount != 0
+GROUP BY
+	game_items
+),
+items_users_total AS (
+SELECT 
+		COUNT(DISTINCT id) AS total_users,
+		COUNT(transaction_id) AS total_sellings
+FROM
+	fantasy.events
+JOIN fantasy.items
+		USING (item_code)
+JOIN fantasy.users
+		USING (id)
+WHERE
+	amount != 0
+)
+SELECT 
+	game_items,
+	sellings,
+	sellings::NUMERIC / total_sellings AS selling_ratio,
+	buyers::NUMERIC / total_users AS owners_ratio
+FROM
+	items_users_total
+CROSS JOIN items_partial
+ORDER BY
+	owners_ratio DESC;
+-- Часть 2. Решение ad hoc-задач
+-- Задача 1. Зависимость активности игроков от расы персонажа:
+-- Рассчитывет сводный отчет по покупателям, продажам, доли в разрезе рас, доли по группам пользователей.  
+WITH total_users AS (
+SELECT
+	    o2.race, 
+	    COUNT(DISTINCT o1.id) AS total_players_at_race,
+	    COUNT(DISTINCT CASE WHEN payer = 1 AND amount != 0  THEN o1.id END) AS payers,
+	    COUNT(DISTINCT CASE WHEN amount != 0 THEN o3.id END) AS buyers
+FROM
+	fantasy.users o1
+RIGHT JOIN fantasy.race o2 USING (race_id)
+LEFT JOIN fantasy.events o3 USING (id)
+GROUP BY
+	race
+),
+total_purchases AS (
+SELECT
+  race,
+    COUNT(transaction_id) AS total_purchases,
+    SUM(amount) AS total_amount,
+    SUM(amount)/ COUNT(transaction_id) AS avg_amount_per_purchase
+FROM
+  fantasy.events
+JOIN fantasy.users
+    USING (id)
+JOIN fantasy.race
+    USING (race_id)
+WHERE
+  amount != 0
+GROUP BY
+  race
+)
+SELECT 
+  race,
+  total_players_at_race,
+  buyers,
+  payers,
+  total_purchases,
+  ROUND(buyers::NUMERIC/total_players_at_race, 2) AS buyers_players_ratio,
+  ROUND(payers::NUMERIC/buyers, 2) AS payers_buyers_ratio,
+  ROUND(total_purchases::NUMERIC/buyers, 2)  AS avg_purchases_per_buyer,
+  avg_amount_per_purchase::NUMERIC(10, 2),
+  ROUND(avg_amount_per_purchase::NUMERIC/buyers, 2) AS avg_amount_per_purchase__per_buyer,
+  ROUND(total_amount::NUMERIC/buyers, 2) AS avg_amount_per_buyer
+FROM
+  total_users
+JOIN total_purchases
+    USING (race)
+GROUP BY
+  race,
+  total_players_at_race,
+  buyers,
+  payers,
+  total_purchases,
+  total_amount,
+  avg_amount_per_purchase
+ORDER BY
+  total_players_at_race DESC;
+
