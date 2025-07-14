@@ -1,0 +1,373 @@
+-- Пример фильтрации данных от аномальных значений
+-- Определим аномальные значения (выбросы) по значению перцентилей:
+WITH limits AS (
+    SELECT  
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY total_area) AS total_area_limit,
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY rooms) AS rooms_limit,
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY balcony) AS balcony_limit,
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY ceiling_height) AS ceiling_height_limit_h,
+        PERCENTILE_DISC(0.01) WITHIN GROUP (ORDER BY ceiling_height) AS ceiling_height_limit_l
+    FROM real_estate.flats     
+),
+-- Найдем id объявлений, которые не содержат выбросы:
+filtered_id AS(
+    SELECT id
+    FROM real_estate.flats  
+    WHERE 
+        total_area < (SELECT total_area_limit FROM limits) 
+        AND rooms < (SELECT rooms_limit FROM limits) 
+        AND balcony < (SELECT balcony_limit FROM limits) 
+        AND ceiling_height < (SELECT ceiling_height_limit_h FROM limits) 
+        AND ceiling_height > (SELECT ceiling_height_limit_l FROM limits)
+    )
+-- Выведем объявления без выбросов:
+SELECT *
+FROM real_estate.flats
+WHERE id IN (SELECT * FROM filtered_id);
+
+-- 1. Какие сегменты рынка недвижимости Санкт-Петербурга и городов Ленинградской области 
+--    имеют наиболее короткие или длинные сроки активности объявлений?
+-- 2. Какие характеристики недвижимости, включая площадь недвижимости, среднюю стоимость квадратного метра, 
+--    количество комнат и балконов и другие параметры, влияют на время активности объявлений? 
+--    Как эти зависимости варьируют между регионами?
+-- 3. Есть ли различия между недвижимостью Санкт-Петербурга и Ленинградской области по полученным результатам?
+-- Напишите ваш запрос здесь
+WITH limits AS (
+    SELECT
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY total_area) AS total_area_limit,
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY rooms) AS rooms_limit,
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY balcony) AS balcony_limit,
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY ceiling_height) AS ceiling_height_limit_h,
+        PERCENTILE_DISC(0.01) WITHIN GROUP (ORDER BY ceiling_height) AS ceiling_height_limit_l
+    FROM
+        real_estate.flats
+),
+filtered_id AS (
+    SELECT id, 
+    o1.type_id
+    FROM real_estate.flats o1
+    JOIN
+        real_estate.type o2 ON o1.type_id = o2.type_id
+    WHERE
+        total_area < (SELECT total_area_limit FROM limits)
+        AND rooms < (SELECT rooms_limit FROM limits)
+        AND balcony < (SELECT balcony_limit FROM limits)
+        AND ceiling_height < (SELECT ceiling_height_limit_h FROM limits)
+        AND ceiling_height > (SELECT ceiling_height_limit_l FROM limits)
+        AND o2.TYPE = 'город'
+),
+cleared_advs AS (
+    SELECT
+        o1.id,
+        o1.total_area,
+        o1.rooms,
+        o1.balcony,
+        o1.ceiling_height,
+        o1.floor,
+        o2.last_price,
+        o2.days_exposition,
+        CASE
+            WHEN o3.city = 'Санкт-Петербург' THEN 'Санкт-Петербург'
+            ELSE 'ЛенОбл'
+        END AS region,
+        CASE
+            WHEN o2.days_exposition BETWEEN 1 AND 30 THEN 'Месяц'
+            WHEN o2.days_exposition BETWEEN 31 AND 90 THEN 'Квартал'
+            WHEN o2.days_exposition BETWEEN 91 AND 180 THEN 'Полгода'
+            WHEN o2.days_exposition > 180 THEN 'Больше полугода'
+            ELSE 'Без категории'
+        END AS category
+    FROM
+        real_estate.flats o1
+    JOIN
+        real_estate.advertisement o2 ON o1.id = o2.id
+    JOIN
+        real_estate.city o3 ON o1.city_id = o3.city_id
+    WHERE
+        o1.id IN (SELECT id FROM filtered_id)
+),
+region_counts AS (
+    SELECT
+        region,
+        COUNT(*) AS total_advs_region
+    FROM
+        cleared_advs
+    GROUP BY
+        region
+)
+SELECT
+    region,
+    category,
+    RANK() OVER (PARTITION BY region ORDER BY COUNT(*) ASC) AS activity_month,
+    COUNT(*) AS total_advs,
+    COUNT(*)/ total_advs_region::numeric AS category_total_advs_region_ratio,
+    ROUND((AVG(last_price / total_area))::numeric, 2) AS avg_price_per_square_meter,
+    ROUND(AVG(total_area)::numeric, 2) AS avg_total_area,
+    ROUND(AVG(rooms)::numeric, 2) AS avg_rooms,
+    ROUND(AVG(balcony)::numeric, 2) AS avg_balcony,
+    ROUND(AVG(ceiling_height)::numeric, 2) AS avg_ceiling_height,
+    ROUND(AVG(floor)::numeric, 2) AS avg_floor
+FROM
+    cleared_advs
+JOIN region_counts USING (region)
+GROUP BY
+    region, category, total_advs_region
+ORDER BY
+    region, category;
+   
+--Средняя длительность по региону
+   WITH limits AS (
+    SELECT
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY total_area) AS total_area_limit,
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY rooms) AS rooms_limit,
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY balcony) AS balcony_limit,
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY ceiling_height) AS ceiling_height_limit_h,
+        PERCENTILE_DISC(0.01) WITHIN GROUP (ORDER BY ceiling_height) AS ceiling_height_limit_l
+    FROM
+        real_estate.flats
+),
+filtered_id AS (
+    SELECT id, 
+    o1.type_id
+    FROM real_estate.flats o1
+    JOIN
+        real_estate.type o2 ON o1.type_id = o2.type_id
+    WHERE
+        total_area < (SELECT total_area_limit FROM limits)
+        AND rooms < (SELECT rooms_limit FROM limits)
+        AND balcony < (SELECT balcony_limit FROM limits)
+        AND ceiling_height < (SELECT ceiling_height_limit_h FROM limits)
+        AND ceiling_height > (SELECT ceiling_height_limit_l FROM limits)
+        AND o2.TYPE = 'город'
+),
+cleared_advs AS (
+    SELECT
+        o1.id,
+        o1.total_area,
+        o1.rooms,
+        o1.balcony,
+        o1.ceiling_height,
+        o1.floor,
+        o2.last_price,
+        o2.days_exposition,
+        CASE
+            WHEN o3.city = 'Санкт-Петербург' THEN 'Санкт-Петербург'
+            ELSE 'ЛенОбл'
+        END AS region,
+        CASE
+            WHEN o2.days_exposition BETWEEN 1 AND 30 THEN 'Месяц'
+            WHEN o2.days_exposition BETWEEN 31 AND 90 THEN 'Квартал'
+            WHEN o2.days_exposition BETWEEN 91 AND 180 THEN 'Полгода'
+            ELSE 'Больше полугода'
+        END AS category
+    FROM
+        real_estate.flats o1
+    JOIN
+        real_estate.advertisement o2 ON o1.id = o2.id
+    JOIN
+        real_estate.city o3 ON o1.city_id = o3.city_id
+    WHERE
+        o1.id IN (SELECT id FROM filtered_id)
+)
+   SELECT
+    region,
+    ROUND(AVG(days_exposition)::numeric, 2) AS avg_days_exposition
+FROM
+    cleared_advs
+GROUP BY
+    region;   
+ 
+-- 1. В какие месяцы наблюдается наибольшая активность в публикации объявлений о продаже недвижимости? 
+--    А в какие — по снятию? Это показывает динамику активности покупателей.
+-- 2. Совпадают ли периоды активной публикации объявлений и периоды, 
+--    когда происходит повышенная продажа недвижимости (по месяцам снятия объявлений)?
+-- 3. Как сезонные колебания влияют на среднюю стоимость квадратного метра и среднюю площадь квартир? 
+--    Что можно сказать о зависимости этих параметров от месяца?
+-- Напишите ваш запрос здесь
+WITH limits AS (
+    SELECT
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY total_area) AS total_area_limit,
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY rooms) AS rooms_limit,
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY balcony) AS balcony_limit,
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY ceiling_height) AS ceiling_height_limit_h,
+        PERCENTILE_DISC(0.01) WITHIN GROUP (ORDER BY ceiling_height) AS ceiling_height_limit_l
+    FROM
+        real_estate.flats
+),
+filtered_id AS (
+	SELECT
+	o1.id, 
+    o1.type_id,
+    EXTRACT(YEAR FROM o3.first_day_exposition) AS year
+    FROM real_estate.flats o1
+    JOIN
+        real_estate.type o2 ON o1.type_id = o2.type_id
+    JOIN
+        real_estate.advertisement o3 ON o1.id = o3.id
+    WHERE
+        total_area < (SELECT total_area_limit FROM limits)
+        AND rooms < (SELECT rooms_limit FROM limits)
+        AND balcony < (SELECT balcony_limit FROM limits)
+        AND ceiling_height < (SELECT ceiling_height_limit_h FROM limits)
+        AND ceiling_height > (SELECT ceiling_height_limit_l FROM limits)
+        AND o2.TYPE = 'город'
+        AND EXTRACT(YEAR FROM o3.first_day_exposition) != 2014 AND EXTRACT(YEAR FROM o3.first_day_exposition) != 2019
+),
+publication AS (
+    SELECT
+        o1.id,
+        o1.first_day_exposition,
+        o1.days_exposition,
+        o2.total_area,
+        o1.last_price,
+        EXTRACT(MONTH FROM o1.first_day_exposition) AS month
+    FROM
+        real_estate.advertisement o1
+    JOIN
+        real_estate.flats o2 ON o1.id = o2.id
+    WHERE
+        o2.id IN (SELECT id FROM filtered_id)
+),
+withdrawal AS (
+    SELECT
+        o1.id,
+        o1.first_day_exposition,
+        o1.days_exposition,
+        o2.total_area,
+        o1.last_price,
+        EXTRACT(MONTH FROM o1.first_day_exposition + o1.days_exposition::integer) AS month
+    FROM
+        real_estate.advertisement o1
+    JOIN
+        real_estate.flats o2 ON o1.id = o2.id
+    WHERE
+        o2.id IN (SELECT id FROM filtered_id) AND EXTRACT(MONTH FROM o1.first_day_exposition + o1.days_exposition::integer) IS NOT NULL
+),
+total_stats AS (
+    SELECT
+        month,
+        'publication' AS type,
+        id,
+        first_day_exposition,
+        days_exposition,
+        total_area,
+        last_price
+    FROM
+        publication
+    UNION ALL
+    SELECT
+        month,
+        'withdrawal' AS type,
+        id,
+        first_day_exposition,
+        days_exposition,
+        total_area,
+        last_price
+    FROM
+        withdrawal
+)
+SELECT
+    month,
+    type,
+    COUNT(*) AS total_advs,
+    ROUND(AVG(last_price / total_area)::numeric, 2) AS avg_price_per_square_meter,
+    ROUND(AVG(total_area)::numeric, 2) AS avg_total_area,
+    RANK() OVER (PARTITION BY type ORDER BY COUNT(*) DESC) AS activity_month,
+    RANK() OVER (PARTITION BY type ORDER BY ROUND(AVG(last_price / total_area)::numeric, 2) DESC) AS square_meter_price_rank,
+    RANK() OVER (PARTITION BY type ORDER BY ROUND(AVG(total_area)::numeric, 2) DESC) AS total_area_rank
+FROM
+    total_stats
+GROUP BY
+    month, type
+ORDER BY
+    month, TYPE;
+
+-- 1. В каких населённые пунктах Ленинградской области наиболее активно публикуют объявления о продаже недвижимости?
+-- 2. В каких населённых пунктах Ленинградской области — самая высокая доля снятых с публикации объявлений? 
+--    Это может указывать на высокую долю продажи недвижимости.
+-- 3. Какова средняя стоимость одного квадратного метра и средняя площадь продаваемых квартир в различных населённых пунктах? 
+--    Есть ли вариация значений по этим метрикам?
+-- 4. Среди выделенных населённых пунктов какие пункты выделяются по продолжительности публикации объявлений? 
+--    То есть где недвижимость продаётся быстрее, а где — медленнее.
+-- Напишите ваш запрос здесь
+WITH limits AS (
+    SELECT
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY total_area) AS total_area_limit,
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY rooms) AS rooms_limit,
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY balcony) AS balcony_limit,
+        PERCENTILE_DISC(0.99) WITHIN GROUP (ORDER BY ceiling_height) AS ceiling_height_limit_h,
+        PERCENTILE_DISC(0.01) WITHIN GROUP (ORDER BY ceiling_height) AS ceiling_height_limit_l
+    FROM
+        real_estate.flats
+),
+filtered_id AS (
+    SELECT id
+    FROM real_estate.flats
+    WHERE
+        total_area < (SELECT total_area_limit FROM limits)
+        AND rooms < (SELECT rooms_limit FROM limits)
+        AND balcony < (SELECT balcony_limit FROM limits)
+        AND ceiling_height < (SELECT ceiling_height_limit_h FROM limits)
+        AND ceiling_height > (SELECT ceiling_height_limit_l FROM limits)
+),
+cleared_advs_total AS (
+    SELECT
+        o1.id,
+        o1.total_area,
+        o1.rooms,
+        o1.balcony,
+        o1.ceiling_height,
+        o1.floor,
+        o2.last_price,
+        o2.days_exposition,
+        o3.city,
+        o1.is_apartment,
+        CASE
+            WHEN o3.city = 'Санкт-Петербург' THEN 'Санкт-Петербург'
+            ELSE 'ЛенОбл'
+        END AS region
+    FROM
+        real_estate.flats o1
+    JOIN
+        real_estate.advertisement o2 ON o1.id = o2.id
+    JOIN
+        real_estate.city o3 ON o1.city_id = o3.city_id
+    WHERE
+        o1.id IN (SELECT id FROM filtered_id)
+),
+cleared_advs_withdrawal AS (
+    SELECT
+    	city,
+        COUNT(CASE WHEN days_exposition IS NOT NULL THEN 1 END) AS withdrawal
+    FROM
+        real_estate.flats o1
+    JOIN
+        real_estate.advertisement o2 ON o1.id = o2.id
+    JOIN
+        real_estate.city o3 ON o1.city_id = o3.city_id
+    WHERE
+        o1.id IN (SELECT id FROM filtered_id)
+    GROUP BY city
+)
+SELECT
+	city,
+	COUNT(*) AS total_advs,
+	withdrawal,
+	withdrawal::real/COUNT(*) AS withdrawal_total_ratio,
+	AVG(days_exposition) AS avg_days_exposition,
+    ROUND((AVG(last_price / total_area))::numeric, 2) AS avg_price_per_square_meter,
+    ROUND(AVG(total_area)::numeric, 2) AS avg_total_area,
+    NTILE (6) OVER(ORDER BY COUNT(*) DESC) AS rank
+FROM
+    cleared_advs_total
+JOIN 
+	cleared_advs_withdrawal USING (city)
+WHERE 
+	region = 'ЛенОбл'
+GROUP BY 
+	city, withdrawal
+HAVING 
+	COUNT(*) > 20
+ORDER BY 
+	total_advs DESC
+LIMIT 15;
